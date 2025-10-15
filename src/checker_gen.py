@@ -11,6 +11,54 @@ from checker_example import init_example
 from checker_repair import repair_checker
 from global_config import global_config, logger
 from tools import extract_checker_code
+import subprocess as sp
+
+
+def sort_commits_by_timestamp(commit_ids: List[str], target) -> List[str]:
+    """
+    Sort commit IDs by timestamp (earliest first).
+    
+    Args:
+        commit_ids: List of commit IDs
+        target: Target repository
+        
+    Returns:
+        List[str]: Sorted commit IDs (earliest first)
+    """
+    logger.info(f"Sorting {len(commit_ids)} commits by timestamp")
+    
+    commit_times = []
+    
+    for commit_id in commit_ids:
+        try:
+            # Get commit timestamp using git
+            result = sp.run(
+                ["git", "show", "-s", "--format=%ct", commit_id],
+                cwd=target.repo.working_dir,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                timestamp = int(result.stdout.strip())
+                commit_times.append((timestamp, commit_id))
+                logger.debug(f"Commit {commit_id}: timestamp {timestamp}")
+            else:
+                logger.warning(f"Failed to get timestamp for commit {commit_id}: {result.stderr}")
+                # Use a very high timestamp so it won't be selected as earliest
+                commit_times.append((float('inf'), commit_id))
+                
+        except Exception as e:
+            logger.warning(f"Error getting timestamp for commit {commit_id}: {e}")
+            commit_times.append((float('inf'), commit_id))
+    
+    # Sort by timestamp (earliest first)
+    commit_times.sort(key=lambda x: x[0])
+    sorted_commits = [commit_id for _, commit_id in commit_times]
+    
+    logger.info(f"Sorted commits: {sorted_commits}")
+    return sorted_commits
 
 
 @dataclass
@@ -79,7 +127,8 @@ class GenerationProgress:
 class GenerationSummary:
     """Summary of checker generation results."""
 
-    commit_id: str
+    bug_id: str
+    commit_ids: List[str]
     commit_type: str
     total_checkers: int
     successful_checkers: int
@@ -91,7 +140,8 @@ class GenerationSummary:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "commit_id": self.commit_id,
+            "bug_id": self.bug_id,
+            "commit_ids": self.commit_ids,
             "commit_type": self.commit_type,
             "total_checkers": self.total_checkers,
             "successful_checkers": self.successful_checkers,
@@ -109,7 +159,8 @@ class GenerationSummary:
         print("\n" + "=" * 60)
         print(f"🎯 GENERATION SUMMARY")
         print("=" * 60)
-        print(f"📋 Commit: {self.commit_id} ({self.commit_type})")
+        print(f"📋 Bug ID: {self.bug_id}")
+        print(f"🔗 Commits: {', '.join(self.commit_ids)} ({self.commit_type})")
         print(f"⏱️  Total Time: {self.total_time:.1f}s")
         print(f"🔢 Checkers Generated: {self.total_checkers}")
         print(f"✅ Successful: {self.successful_checkers}/{self.total_checkers}")
@@ -134,14 +185,14 @@ class GenerationSummary:
 
 
 def gen_checker(
-    commit_file="commits.txt",
+    commit_file="commits.json",
     result_file=None,
     use_multi=True,
     use_general=False,
     no_utility=False,
     sample_examples=False,
 ):
-    """Generate checkers for multiple commits with improved output format."""
+    """Generate checkers for multiple bugs with multiple commits."""
 
     print("🚀 Starting Checker Generation")
     print(
@@ -149,7 +200,30 @@ def gen_checker(
     )
     logger.info(f"Starting batch generation with multi={use_multi}")
 
-    content = Path(commit_file).read_text()
+    # Determine file format and load data
+    input_file = Path(commit_file)
+    if input_file.suffix == '.json':
+        # New JSON format: [{"bug_id": "bug1", "commit_ids": ["commit1", "commit2"], "bug_type": "UAF"}]
+        with open(input_file, 'r') as f:
+            bug_data_list = json.load(f)
+    else:
+        # Legacy text format: commit_id,commit_type
+        content = input_file.read_text()
+        bug_data_list = []
+        for line in content.strip().splitlines():
+            if line.strip():
+                try:
+                    commit_id, commit_type = line.strip().split(",", 1)
+                    bug_data_list.append({
+                        "bug_id": commit_id,  # Use commit_id as bug_id for legacy format
+                        "commit_ids": [commit_id],
+                        "bug_type": commit_type
+                    })
+                except ValueError:
+                    print(f"⚠️  Skipping invalid line: {line}")
+                    logger.warning(f"Invalid line format: {line}")
+                    continue
+
     result_dir = Path(global_config.result_dir)
     result_dir.mkdir(parents=True, exist_ok=True)
 
@@ -165,37 +239,39 @@ def gen_checker(
     # Setup output files
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     log_file = result_dir / f"generation_log_{timestamp}.log"
-    result_file = result_dir / f"generation_results_{timestamp}.txt"
+    result_file_path = result_dir / f"generation_results_{timestamp}.txt"
     summary_file = result_dir / f"generation_summary_{timestamp}.json"
 
     batch_summary = {
         "start_time": datetime.now().isoformat(),
-        "total_commits": 0,
-        "successful_commits": 0,
+        "total_bugs": 0,
+        "successful_bugs": 0,
         "results": [],
     }
 
-    for line_num, line in enumerate(content.splitlines(), 1):
-        if result_content and line in result_content:
-            if line + ",False" in result_content or line + ",True" in result_content:
-                print(f"⏭️  Skipping {line} (already processed)")
-                logger.info(f"Skip {line}")
+    for bug_num, bug_data in enumerate(bug_data_list, 1):
+        bug_id = bug_data["bug_id"]
+        commit_ids = bug_data["commit_ids"]
+        bug_type = bug_data["bug_type"]
+        
+        skip_key = f"{bug_id},{bug_type}"
+        if result_content and skip_key in result_content:
+            if skip_key + ",False" in result_content or skip_key + ",True" in result_content:
+                print(f"⏭️  Skipping {bug_id} (already processed)")
+                logger.info(f"Skip {bug_id}")
                 continue
 
-        if not line.strip():
-            # Skip empty lines
-            continue
+        batch_summary["total_bugs"] += 1
 
-        commit_id, commit_type = line.split(",")
-        batch_summary["total_commits"] += 1
-
-        print(f"\n📦 Processing commit {line_num}: {commit_id}")
-        print(f"🏷️  Type: {commit_type}")
+        print(f"\n📦 Processing bug {bug_num}: {bug_id}")
+        print(f"🔗 Commits: {', '.join(commit_ids)}")
+        print(f"🏷️  Type: {bug_type}")
 
         try:
             checker_results, summary = gen_checker_worker(
-                commit_id,
-                commit_type,
+                bug_id,
+                commit_ids,
+                bug_type,
                 use_multi=use_multi,
                 use_general=use_general,
                 no_utility=no_utility,
@@ -204,32 +280,32 @@ def gen_checker(
 
             # Log results
             with open(log_file, "a") as flog:
-                flog.write(f"{commit_id} {commit_type} {checker_results}\n")
+                flog.write(f"{bug_id} {bug_type} {commit_ids} {checker_results}\n")
 
-            with open(result_file, "a") as fres:
+            with open(result_file_path, "a") as fres:
                 correct = any([TP > 0 and TN > 0 for _, TP, TN in checker_results])
-                fres.write(f"{commit_id},{commit_type},{correct}\n")
+                fres.write(f"{bug_id},{bug_type},{correct}\n")
 
             batch_summary["results"].append(summary.to_dict())
             if summary.perfect_checkers > 0:
-                batch_summary["successful_commits"] += 1
+                batch_summary["successful_bugs"] += 1
 
             summary.print_summary()
 
         except Exception as e:
             error_msg = str(e).replace("\n", " ")
-            print(f"❌ Error processing {commit_id}: {error_msg}")
-            logger.error(f"Error processing {commit_id}: {e}")
+            print(f"❌ Error processing {bug_id}: {error_msg}")
+            logger.error(f"Error processing {bug_id}: {e}")
 
             with open(log_file, "a") as flog:
-                flog.write(f"{commit_id} {commit_type} ERROR: {error_msg}\n")
-            with open(result_file, "a") as fres:
-                fres.write(f"{commit_id},{commit_type},Exception\n")
+                flog.write(f"{bug_id} {bug_type} {commit_ids} ERROR: {error_msg}\n")
+            with open(result_file_path, "a") as fres:
+                fres.write(f"{bug_id},{bug_type},Exception\n")
 
     # Save batch summary
     batch_summary["end_time"] = datetime.now().isoformat()
-    batch_summary["success_rate"] = batch_summary["successful_commits"] / max(
-        batch_summary["total_commits"], 1
+    batch_summary["success_rate"] = batch_summary["successful_bugs"] / max(
+        batch_summary["total_bugs"], 1
     )
 
     with open(summary_file, "w") as f:
@@ -237,21 +313,22 @@ def gen_checker(
 
     print(f"\n🎊 Batch Complete!")
     print(
-        f"📊 Success Rate: {batch_summary['successful_commits']}/{batch_summary['total_commits']}"
+        f"📊 Success Rate: {batch_summary['successful_bugs']}/{batch_summary['total_bugs']}"
     )
     print(f"📄 Summary saved to: {summary_file}")
 
 
 def gen_checker_worker(
-    commit_id,
-    commit_type,
+    bug_id,
+    commit_ids,
+    bug_type,
     use_multi=True,
     use_plan_feedback=False,
     use_general=False,
     no_utility=False,
     sample_examples=False,
 ):
-    """Generate checkers for one commit with improved progress tracking."""
+    """Generate checkers for one bug with multiple commits with improved progress tracking."""
 
     progress = GenerationProgress()
     analysis_backend = global_config.backend
@@ -261,7 +338,8 @@ def gen_checker_worker(
     checker_data_list: List[CheckerData] = []
     checker_nums = global_config.get("checker_nums")
 
-    id = f"AllGen-{commit_type}-{commit_id}"
+    # Use bug_id for the main directory structure
+    id = f"AllGen-{bug_type}-{bug_id}"
     result_dir = Path(global_config.result_dir)
 
     # Build directory structure
@@ -271,10 +349,22 @@ def gen_checker_worker(
     output_dir = result_dir / id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Collect patches from all commits
+    patches = []
+    combined_patch = []
+    for commit_id in commit_ids:
+        patch = target.get_patch(commit_id)
+        patches.append(patch)
+        combined_patch.append(f"=== Commit: {commit_id} ===\n{patch}\n")
+    
+    # Combine all patches into a comprehensive patch for analysis
+    full_patch = "\n".join(combined_patch)
+
     # Save metadata
     metadata = {
-        "commit_id": commit_id,
-        "commit_type": commit_type,
+        "bug_id": bug_id,
+        "commit_ids": commit_ids,
+        "bug_type": bug_type,
         "generation_config": {
             "use_multi": use_multi,
             "use_general": use_general,
@@ -287,9 +377,16 @@ def gen_checker_worker(
 
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-    patch = target.get_patch(commit_id)
-    (output_dir / "commit_id.txt").write_text(commit_id)
-    (output_dir / "patch.md").write_text(patch)
+    # Save commit information
+    (output_dir / "bug_id.txt").write_text(bug_id)
+    (output_dir / "commit_ids.txt").write_text("\n".join(commit_ids))
+    (output_dir / "combined_patch.md").write_text(full_patch)
+    
+    # Save individual patches
+    patches_dir = output_dir / "individual_patches"
+    patches_dir.mkdir(parents=True, exist_ok=True)
+    for i, (commit_id, patch) in enumerate(zip(commit_ids, patches)):
+        (patches_dir / f"patch_{i:02d}_{commit_id}.md").write_text(patch)
 
     # Check for existing results
     ranking_file = output_dir / "ranking.txt"
@@ -301,8 +398,9 @@ def gen_checker_worker(
             logger.info(f"Perfect checker found for {id}")
 
             summary = GenerationSummary(
-                commit_id=commit_id,
-                commit_type=commit_type,
+                bug_id=bug_id,
+                commit_ids=commit_ids,
+                commit_type=bug_type,
                 total_checkers=len(checker_results),
                 successful_checkers=len(
                     [r for r in checker_results if r[1] > 0 or r[2] > 0]
@@ -321,7 +419,9 @@ def gen_checker_worker(
     for i in range(len(checker_results), checker_nums):
         print(f"\n🔄 Generating checker {i+1}/{checker_nums}")
 
-        checker_data = CheckerData(commit_id, commit_type, result_dir, i, patch)
+        # Use the first commit_id for CheckerData compatibility (may need refactoring later)
+        main_commit_id = commit_ids[0] if commit_ids else "unknown"
+        checker_data = CheckerData(main_commit_id, bug_type, result_dir, i, full_patch)
 
         # Create organized intermediate directory
         intermediate_dir = output_dir / "generation" / f"checker_{i:02d}"
@@ -331,7 +431,7 @@ def gen_checker_worker(
             if use_multi:
                 # Step 1: Pattern Extraction
                 step_name = progress.start_step("🧩 Pattern Extraction")
-                pattern = patch2pattern(id, i, patch, use_general=use_general)
+                pattern = patch2pattern(id, i, full_patch, use_general=use_general)
                 progress.complete_step(step_name, f"Extracted {len(pattern)} chars")
 
                 # Step 2: Plan Generation
@@ -340,7 +440,7 @@ def gen_checker_worker(
                     id,
                     i,
                     pattern,
-                    patch,
+                    full_patch,
                     no_utility=no_utility,
                     sample_examples=sample_examples,
                 )
@@ -356,7 +456,7 @@ def gen_checker_worker(
                     i,
                     pattern,
                     refined_plan,
-                    patch,
+                    full_patch,
                     no_utility=no_utility,
                     sample_examples=sample_examples,
                 )
@@ -368,7 +468,7 @@ def gen_checker_worker(
                 pattern = ""
                 plan = ""
                 refined_plan = ""
-                checker_code = patch2checker(id, i, patch)
+                checker_code = patch2checker(id, i, full_patch)
                 progress.complete_step(
                     step_name, f"Generated {len(checker_code.splitlines())} lines"
                 )
@@ -419,10 +519,11 @@ def gen_checker_worker(
 
             # Step 5: Validation
             step_name = progress.start_step("✅ Validation")
+            # Pass commit_ids (list) for validation, along with full_patch for analysis
             TP, TN = analysis_backend.validate_checker(
                 repaired_checker_code,
-                commit_id,
-                patch,
+                commit_ids,  # Pass all commit IDs instead of just main_commit_id
+                full_patch,
                 target,
                 skip_build_checker=True,
             )
@@ -478,8 +579,9 @@ def gen_checker_worker(
 
     # Create comprehensive summary
     summary = GenerationSummary(
-        commit_id=commit_id,
-        commit_type=commit_type,
+        bug_id=bug_id,
+        commit_ids=commit_ids,
+        commit_type=bug_type,
         total_checkers=len(checker_results),
         successful_checkers=len([r for r in checker_results if r[1] > 0 or r[2] > 0]),
         perfect_checkers=len([r for r in checker_results if r[1] > 0 and r[2] > 0]),

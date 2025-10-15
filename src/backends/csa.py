@@ -7,6 +7,14 @@ import shlex
 import shutil
 import subprocess as sp
 import threading
+import json
+import os
+import random
+import re
+import shlex
+import shutil
+import subprocess as sp
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -40,6 +48,17 @@ class ClangBackend(AnalysisBackendFactory):
     ]
 
     _v8_args = [
+        ("-disable-checker", "core"),
+        ("-disable-checker", "cplusplus"),
+        ("-disable-checker", "deadcode"),
+        ("-disable-checker", "unix"),
+        ("-disable-checker", "nullability"),
+        ("-disable-checker", "security"),
+        ("-maxloop", 8),
+        ("-o", "tmp/SAGenTestCSAResult"),
+    ]
+
+    _chromium_args = [
         ("-disable-checker", "core"),
         ("-disable-checker", "cplusplus"),
         ("-disable-checker", "deadcode"),
@@ -426,6 +445,10 @@ extern "C" const char clang_analyzerAPIVersionString[] =
             return self._validate_checker_v8(
                 checker_code, commit_id, patch, target, skip_build_checker
             )
+        elif target._target_type == "chromium":
+            return self._validate_checker_chromium(
+                checker_code, commit_id, patch, target, skip_build_checker
+            )
         else:
             raise NotImplementedError(
                 f"Validation for target type {target._target_type} is not implemented."
@@ -472,6 +495,18 @@ extern "C" const char clang_analyzerAPIVersionString[] =
             )
         elif target._target_type == "v8":
             return self._run_checker_v8(
+                checker_code,
+                commit_id,
+                target,
+                object_to_analyze=object_to_analyze,
+                jobs=jobs,
+                output_dir=output_dir,
+                skip_build_checker=skip_build_checker,
+                skip_checkout=skip_checkout,
+                **kwargs,
+            )
+        elif target._target_type == "chromium":
+            return self._run_checker_chromium(
                 checker_code,
                 commit_id,
                 target,
@@ -635,7 +670,7 @@ extern "C" const char clang_analyzerAPIVersionString[] =
         # Note: kernel cleaning is handled by target.checkout_commit() which runs 'make clean'
         olddefcmd = comd_prefix + f" make LLVM=1 ARCH={arch} olddefconfig"
         if not skip_checkout:
-            target.checkout_commit(commit_id, olddefcmd=olddefcmd)
+            target.checkout_commit(commit_id, olddefmd=olddefcmd)
 
         # Process the command based on the architecture
         if arch == "arm64":
@@ -961,6 +996,23 @@ extern "C" const char clang_analyzerAPIVersionString[] =
             f.write("=" * 50 + "\n")
 
         return TP, TN
+    
+    def _create_v8_report_softlinks(
+        self, timestamped_output_dir: Path, base_output_dir: Path
+    ) -> None:
+        """
+        Create softlinks to make V8 report structure compatible with refinement process.
+        """
+        try:
+            if timestamped_output_dir.exists():
+                for subdir in timestamped_output_dir.iterdir():
+                    if subdir.is_dir():
+                        link_target = base_output_dir / subdir.name
+                        if not link_target.exists():
+                            link_target.symlink_to(subdir, target_is_directory=True)
+                            logger.debug(f"Created softlink: {link_target} -> {subdir}")
+        except Exception as e:
+            logger.warning(f"Failed to create V8 report softlinks: {e}")
 
     def _get_object_file_from_source(self, source_file, target):
         """Convert source file path to corresponding object file path using compile_commands.json."""
@@ -1362,28 +1414,179 @@ extern "C" const char clang_analyzerAPIVersionString[] =
                 skip_next = False
                 continue
 
-            # Skip flags we don't want
+            # Skip output-related and module-related flags
             if part in ["-c", "-MMD", "-o", "-MF"]:
                 skip_next = True
                 continue
             if (
-                part.endswith((".o", ".o.d"))
+                part.endswith(".o")
+                or part.endswith(".o.d")
                 or part.startswith("-fmodule-file=")
                 or part.startswith("-fmodule-map-file=")
-                or part == "-Xclang"
+                or part
+                in [
+                    "-fmodules",
+                    "-fno-implicit-module-maps",
+                    "-fno-implicit-modules",
+                    "-fbuiltin-module-map",
+                    "-DUSE_LIBCXX_MODULES",
+                ]
             ):
-                skip_next = True
-                continue
-            if part in [
-                "-fmodules",
-                "-fno-implicit-module-maps",
-                "-fno-implicit-modules",
-                "-fbuiltin-module-map",
-                "-DUSE_LIBCXX_MODULES",
-            ]:
                 continue
 
+            # Handle -Xclang pairs properly - skip -Xclang and the next argument if it's module-related
+            if part == "-Xclang":
+                skip_next = True  # Skip the next argument after -Xclang
+                continue
+
+            # Keep all other flags - they work for compilation, they should work for analysis
             analyzer_cmd.append(part)
+
+        # Add output file with HTML format for cross-file diagnostics
+        analyzer_cmd.extend(
+            [
+                "-Xanalyzer",
+                "-analyzer-output=html",
+                "-o",
+                str(output_dir.absolute()),
+                f"../../{source_file}",  # Relative to build dir
+            ]
+        )
+
+        # Step 3: Run the analyzer from working directory
+        work_dir = directory or (target.repo.working_dir if target else None)
+        if not work_dir:
+            return False, 0, "No working directory available"
+
+        logger.info(f"Running analyzer from: {work_dir}")
+        logger.info(f"Analyzer command: {' '.join(analyzer_cmd)}")
+
+        try:
+            analyze_result = sp.run(
+                analyzer_cmd,
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+
+            if analyze_result.returncode == 0 or analyze_result.returncode == 1:
+                # Count bugs from stderr output or HTML files
+                bug_count = self.get_num_bugs_from_direct_analysis(analyze_result.stderr)
+                return True, bug_count, None
+            else:
+                error_msg = f"Analysis failed with return code {analyze_result.returncode}: {analyze_result.stderr}"
+                logger.error(f"Analyzer failed: {error_msg}")
+                return False, 0, error_msg
+
+        except sp.TimeoutExpired:
+            error_msg = f"Analysis timeout after {timeout} seconds"
+            logger.warning(f"Analysis timeout")
+            return False, 0, error_msg
+        except Exception as e:
+            error_msg = f"Unexpected error during analysis: {str(e)}"
+            logger.error(f"Unexpected error during analysis: {e}")
+            return False, 0, error_msg
+
+    def _analyze_chromium_source_file(
+        self, compile_entry, output_dir, target=None, timeout=900
+    ):
+        """
+        Helper function to analyze a single Chromium source file using clang++ --analyze.
+
+        Args:
+            compile_entry: Entry from compile_commands.json containing:
+                - file: source file path
+                - command: original compilation command
+                - directory: working directory for compilation
+            output_dir: Directory to save HTML analysis reports
+            target: Optional Chromium target for fallback working directory
+            timeout: Analysis timeout in seconds
+
+        Returns:
+            tuple: (success: bool, num_bugs: int, error_message: str or None)
+        """
+        source_file = compile_entry.get("file", "")
+        compile_cmd = compile_entry.get("command", "")
+        directory = compile_entry.get("directory", "")
+
+        if not source_file or not compile_cmd:
+            return False, 0, "Missing file or command in compile entry"
+
+        # Clean up source file path for logging
+        if source_file.startswith("../../"):
+            display_source = source_file[6:]
+        else:
+            display_source = source_file
+
+        # Build clang++ --analyze command
+        llvm_build_dir = self.backend_path / "build"
+        plugin_path = f"{llvm_build_dir}/lib/SAGenTestPlugin.so"
+
+        cmd_parts = shlex.split(compile_cmd)
+        analyzer_cmd = [f"{llvm_build_dir}/bin/clang++", "--analyze"]
+
+        # Add plugin and checker configuration
+        analyzer_cmd.extend(
+            [
+                "-Xanalyzer",
+                "-load",
+                "-Xanalyzer",
+                plugin_path,
+                "-Xanalyzer",
+                "-analyzer-checker",
+                "-Xanalyzer",
+                "custom.SAGenTestChecker",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "core",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "cplusplus",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "deadcode",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "unix",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "nullability",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "security",
+                "-Xanalyzer",
+                "-analyzer-config",
+                "-Xanalyzer",
+                "max-loop=8",
+                "-Xanalyzer",
+                "-analyzer-output=html",
+                "-o",
+                str(output_dir.absolute())
+                if hasattr(output_dir, "absolute")
+                else str(output_dir),
+            ]
+        )
+
+        # Extract compilation flags from original command (skip output and module-related flags)
+        skip_next = False
+        for part in cmd_parts[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if part in ['-o', '-MF', '-MT', '-MD']:
+                skip_next = True
+                continue
+            if part.startswith('-o') or part.startswith('-MF') or part.startswith('-MT'):
+                continue
+            if not part.endswith('.o') and not part.endswith('.d'):
+                analyzer_cmd.append(part)
 
         # Add the source file
         analyzer_cmd.append(source_file)
@@ -1391,785 +1594,36 @@ extern "C" const char clang_analyzerAPIVersionString[] =
         # Determine working directory
         work_dir = directory or (target.repo.working_dir if target else None)
         if not work_dir:
-            return False, 0, "No working directory specified"
+            return False, 0, "No working directory available"
 
         # Run analysis
         try:
-            analyze_result = sp.run(
+            logger.debug(f"Analyzing Chromium source: {display_source}")
+            result = sp.run(
                 analyzer_cmd,
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=timeout
             )
 
-            # Count bugs from HTML output
-            num_bugs = self.get_num_bugs_from_scan_build(str(output_dir))
-            error_msg = None
-
-            if analyze_result.returncode != 0:
-                # Non-zero return code but analysis may still have produced results
-                error_msg = analyze_result.stderr
-                escape_source = clean_source.replace("/", "_")
-                Path(f"tmp/error-{escape_source}.txt").write_text(error_msg)
-                logger.warning(
-                    f"Analysis returned non-zero code for {clean_source}: {analyze_result.returncode}"
-                )
-
-            return True, num_bugs, error_msg
+            if result.returncode == 0 or result.returncode == 1:  # 1 can indicate warnings/bugs found
+                # Count bugs from stderr output
+                bug_count = self.get_num_bugs_from_direct_analysis(result.stderr)
+                return True, bug_count, None
+            else:
+                error_msg = f"Analysis failed with return code {result.returncode}: {result.stderr}"
+                logger.error(f"Failed to analyze {display_source}: {error_msg}")
+                return False, 0, error_msg
 
         except sp.TimeoutExpired:
-            num_bugs = self.get_num_bugs_from_scan_build(str(output_dir))
-            return False, num_bugs, f"Timeout analyzing {clean_source} after {timeout}s"
+            error_msg = f"Analysis timeout after {timeout} seconds"
+            logger.warning(f"Timeout analyzing {display_source}")
+            return False, 0, error_msg
         except Exception as e:
-            num_bugs = self.get_num_bugs_from_scan_build(str(output_dir))
-            return False, num_bugs, f"Error analyzing {clean_source}: {str(e)}"
-
-    def _analyze_v8_files_parallel(
-        self, source_entries_list, unique_output_dir, target, max_workers=32
-    ):
-        """
-        Analyze V8 source files in parallel.
-
-        Args:
-            source_entries_list: List of compile_commands.json entries to analyze
-            unique_output_dir: Base output directory for reports
-            target: V8 target
-            max_workers: Number of parallel workers
-
-        Returns:
-            tuple: (total_bugs, analyzed_files, failed_files)
-        """
-
-        # Thread-safe counters
-        total_bugs = 0
-        analyzed_files = 0
-        failed_files = 0
-        lock = threading.Lock()
-
-        def analyze_single_file(entry_with_index):
-            """Analyze a single source file - designed for parallel execution"""
-            i, entry = entry_with_index
-            nonlocal total_bugs, analyzed_files, failed_files
-
-            source_file = entry.get("file", "")
-            if source_file.startswith("../../"):
-                clean_source = source_file[6:]
-            else:
-                clean_source = source_file
-
-            # Create unique output directory name from full source path
-            safe_filename = clean_source.replace("/", "_").replace(".", "_")
-            file_output_dir = unique_output_dir / safe_filename
-            file_output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Log progress for large batches
-            if len(source_entries_list) > 10:
-                if (i + 1) % 10 == 0 or i == 0:
-                    logger.info(
-                        f"Progress: {i + 1}/{len(source_entries_list)} files - Analyzing: {clean_source}"
-                    )
-
-            try:
-                # Use helper function to analyze the file
-                success, num_bugs, error_msg = self._analyze_v8_source_file(
-                    entry, file_output_dir, target=target, timeout=900
-                )
-
-                # Thread-safe updates
-                with lock:
-                    if success:
-                        if num_bugs > 0:
-                            logger.info(
-                                f"Found {num_bugs} bugs in {clean_source} -> {safe_filename}/"
-                            )
-                            total_bugs += num_bugs
-                        else:
-                            # Remove empty directory
-                            shutil.rmtree(file_output_dir, ignore_errors=True)
-                        analyzed_files += 1
-                    else:
-                        if "Timeout" in error_msg:
-                            logger.warning(
-                                f"{error_msg} (file {i+1}/{len(source_entries_list)})"
-                            )
-                        else:
-                            logger.error(error_msg)
-                        failed_files += 1
-                        # Remove directory on failure
-                        shutil.rmtree(file_output_dir, ignore_errors=True)
-
-            except Exception as e:
-                with lock:
-                    logger.error(f"Unexpected error analyzing {clean_source}: {e}")
-                    failed_files += 1
-                    # Remove directory on exception
-                    shutil.rmtree(file_output_dir, ignore_errors=True)
-
-        # Execute analysis in parallel
-        logger.info(f"Starting parallel analysis with {max_workers} workers")
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            futures = []
-            for i, entry in enumerate(source_entries_list):
-                future = executor.submit(analyze_single_file, (i, entry))
-                futures.append(future)
-
-            # Wait for all tasks to complete
-            completed = 0
-            for future in as_completed(futures):
-                completed += 1
-                if len(source_entries_list) > 20 and completed % 20 == 0:
-                    logger.info(
-                        f"Completed {completed}/{len(source_entries_list)} files"
-                    )
-
-                try:
-                    future.result()  # This will raise any exception that occurred
-                except Exception as e:
-                    with lock:
-                        logger.error(f"Future execution error: {e}")
-                        failed_files += 1
-
-        logger.info(f"Parallel analysis completed")
-        return total_bugs, analyzed_files, failed_files
-
-    def _configure_v8_clang(self, target):
-        """
-        Configure V8 build to use our custom clang for scan-build interception.
-        """
-
-        # Find GN executable (similar to v8.py logic)
-        gn_exe = None
-        gn_candidates = [
-            Path(target.repo.working_dir) / "buildtools" / "linux64" / "gn",
-            Path(target.repo.working_dir) / "third_party" / "depot_tools" / "gn",
-        ]
-
-        for candidate in gn_candidates:
-            if candidate.exists() and candidate.is_file():
-                gn_exe = str(candidate)
-                break
-
-        if not gn_exe:
-            # Try to find gn in PATH
-            gn_exe = shutil.which("gn")
-
-        if not gn_exe:
-            logger.warning("GN executable not found. Cannot configure custom clang.")
-            return
-
-        # Configure V8 to use our custom clang
-        clang_base_path = self.backend_path / "build"
-
-        # Get the clang version
-        clang_version_result = sp.run(
-            [str(clang_base_path / "bin" / "clang"), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        clang_version = "21"  # default
-        if clang_version_result.returncode == 0:
-            version_match = re.search(
-                r"clang version (\d+)", clang_version_result.stdout
-            )
-            if version_match:
-                clang_version = version_match.group(1)
-
-        logger.info(f"Detected clang version: {clang_version}")
-
-        # Use our custom clang if compiler-rt is available
-        gn_args = [
-            "is_debug=false",
-            f'clang_base_path="{clang_base_path}"',
-            "clang_use_chrome_plugins=false",
-            f'clang_version="{clang_version}"',
-            "use_custom_libcxx=false",
-            "v8_use_external_startup_data=false",
-            "use_clang_modules=false",
-            "use_autogenerated_modules=false",
-            "is_clang=true",
-            # Disable experimental features that clang 18 doesn't support
-            "use_cfi=false",
-            "use_thin_lto=false",
-            "use_custom_libcxx=false",
-            # Use LLVM's lld linker to avoid archive indexing issues
-            "use_lld=true",
-            # Force older clang compatibility
-            "llvm_android_mainline=true",  # This disables crel flags
-            # Use our own clang++ and ensure proper C++ standard
-            f'cxx="{clang_base_path}/bin/clang++"',
-            f'cc="{clang_base_path}/bin/clang"',
-            # Use LLVM's ar and ranlib to avoid index issues
-            f'ar="{clang_base_path}/bin/llvm-ar"',
-            f'ranlib="{clang_base_path}/bin/llvm-ranlib"',
-            # Add libcxx include paths for C++20 support
-            # f'extra_cppflags=["-I{clang_base_path}/include/c++/v1", "-stdlib=libc++"]',
-            # f'extra_ldflags=["-L{clang_base_path}/lib", "-stdlib=libc++", "-lc++", "-lc++abi"]',
-            # Add compiler flags to handle C++20 features
-            "treat_warnings_as_errors=false",
-        ]
-
-        logger.info(f"Configuring V8 build with custom clang: {clang_base_path}")
-        build_dir = "out/x64.release"
-
-        res = sp.run(
-            [gn_exe, "gen", build_dir, f"--args={' '.join(gn_args)}"],
-            cwd=target.repo.working_dir,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-
-        if res.returncode != 0:
-            logger.error(f"Failed to configure V8 with custom clang: {res.stderr}")
-            logger.error(res.stdout)
-        else:
-            logger.info("Successfully configured V8 to use custom clang")
-
-    def _run_checker_v8(
-        self,
-        checker_code: str,
-        commit_id: str,
-        target,
-        object_to_analyze: str = None,
-        jobs: int = 32,
-        output_dir: str = "tmp",
-        skip_build_checker: bool = False,
-        skip_checkout: bool = False,
-        skip_v8_build: bool = False,
-        parallel_analysis: bool = True,
-        **kwargs,
-    ) -> int:
-        """
-        Run the checker against a V8 commit.
-
-        Pipeline:
-        1. Build the entire V8 project with ninja (unless skip_v8_build=True)
-        2. Use clang++ --analyze on all source files from compile_commands.json
-
-        Args:
-            checker_code (str): The checker code to run.
-            commit_id (str): The commit ID to run the checker against.
-            target: The V8 target to be tested.
-            object_to_analyze (str): The source file to analyze (optional).
-            jobs (int): Number of jobs to run in parallel for ninja build.
-            output_dir (str): Directory to save the output.
-            skip_build_checker (bool): Skip building the checker.
-            skip_checkout (bool): Skip checking out the commit.
-            skip_v8_build (bool): Skip building V8 (reuse existing out/ directory).
-            parallel_analysis (bool): Analyze source files in parallel.
-
-        Returns:
-            int: Number of bugs found, or negative values for errors:
-                -999: Build failed
-                -1: Timeout
-                -10: Too many bugs found
-        """
-        # Remove depot_tools from PATH to prevent interference
-        original_path = os.environ.get("PATH", "")
-        filtered_path = ":".join(
-            [p for p in original_path.split(":") if "depot_tools" not in p]
-        )
-        os.environ["PATH"] = filtered_path
-
-        logger.info(f"V8 run checker: removed depot_tools from PATH")
-
-        # Extract parameters from kwargs
-        arch = kwargs.get("arch", "x64")
-        build_config = kwargs.get("build_config", "release")
-        timeout = kwargs.get("timeout", 1800)
-        build_dir = f"out/{arch}.{build_config}"
-
-        output_dir = Path(output_dir)
-
-        # Build checker if needed
-        if not skip_build_checker:
-            build_res, stderr = self.build_checker(checker_code, Path("tmp"), attempt=1)
-            if build_res != 0:
-                logger.error(f"Build failed: {stderr}")
-                return -999
-
-        # Use the provided output_dir directly (consistent with Linux)
-        # No longer create unique timestamped directories
-
-        # Checkout commit if needed
-        if not skip_checkout:
-            llvm_build_dir = self.backend_path / "build"
-            print(commit_id)
-            target.checkout_commit(
-                commit_id,
-                is_before=False,
-                arch=arch,
-                build_config=build_config,
-                llvm_path=llvm_build_dir,
-                skip_v8_build=skip_v8_build,
-            )
-        else:
-            logger.info("Skipping checkout")
-
-        # Step 1: Build entire V8 with ninja (unless skip_v8_build is True)
-        llvm_build_dir = self.backend_path / "build"
-        env = os.environ.copy()
-        env["PATH"] = f"{llvm_build_dir}/bin:" + env.get("PATH", "")
-
-        if not skip_v8_build:
-            logger.info(f"Building entire V8 project with ninja -j{jobs}")
-
-            build_cmd = ["ninja", "-C", build_dir, "-k", "5"]
-            if jobs:
-                build_cmd.append(f"-j{jobs}")
-
-            logger.info(f"Running: {' '.join(build_cmd)}")
-
-            try:
-                build_result = sp.run(
-                    build_cmd,
-                    cwd=target.repo.working_dir,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-
-                if build_result.returncode != 0:
-                    logger.error(f"Ninja build failed")
-                    # Log down the error msg
-                    Path("tmp/v8-build-stdout.txt").write_text(build_result.stdout)
-                    Path("tmp/v8-build-stderr.txt").write_text(build_result.stderr)
-
-                    # FIXME: There are some issues when building v8 testcases
-                    # FIXME: Now we just keep going
-                    # return -999
-
-                logger.info("V8 build completed successfully")
-
-            except sp.TimeoutExpired:
-                logger.error(f"V8 build timeout after {timeout} seconds")
-                return -1
-            except Exception as e:
-                logger.error(f"V8 build error: {e}")
-                return -999
-        else:
-            logger.info("Skipping V8 build - using existing build artifacts")
-
-        # Step 2: Get all source files from compile_commands.json
-        compile_commands_path = (
-            Path(target.repo.working_dir) / build_dir / "compile_commands.json"
-        )
-
-        if not compile_commands_path.exists():
-            logger.error(f"compile_commands.json not found at {compile_commands_path}")
-            return -999
-
-        try:
-            with open(compile_commands_path, "r") as f:
-                compile_commands = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read compile_commands.json: {e}")
-            return -999
-
-        # Filter source files to analyze
-        source_files_to_analyze = []
-
-        if object_to_analyze:
-            # Analyze specific file only
-            for entry in compile_commands:
-                file_path = entry.get("file", "")
-                # Normalize path
-                if file_path.startswith("../../"):
-                    file_path = file_path[6:]
-
-                if file_path == object_to_analyze or file_path.endswith(
-                    f"/{object_to_analyze}"
-                ):
-                    source_files_to_analyze.append(entry)
-                    break
-        else:
-            # Analyze all source files
-            for entry in compile_commands:
-                file_path = entry.get("file", "")
-                if file_path and file_path.endswith((".cc", ".cpp", ".c")):
-                    # Skip third-party and generated files
-                    if not any(
-                        exclude in file_path
-                        for exclude in [
-                            "third_party/",
-                            "buildtools/",
-                            "gen/",
-                            "tools/v8_gypfiles/",
-                        ]
-                    ):
-                        source_files_to_analyze.append(entry)
-
-        if not source_files_to_analyze:
-            logger.error("No source files to analyze")
-            return 0
-
-        logger.info(f"Analyzing {len(source_files_to_analyze)} V8 source files")
-
-        # Create timestamped directory (consistent with Linux scan-build behavior)
-        timestamped_output_dir = self._create_timestamped_output_dir(output_dir)
-
-        # Step 3: Run clang++ --analyze on source files (parallel or sequential)
-        if parallel_analysis:
-            # Import here to avoid circular import
-            from global_config import global_config
-
-            # Use parallel analysis
-            default_workers = min(global_config.jobs, len(source_files_to_analyze))
-            max_workers = kwargs.get("max_workers", default_workers)
-            logger.info(f"Using parallel analysis with {max_workers} workers")
-
-            total_bugs, analyzed_files, failed_files = self._analyze_v8_files_parallel(
-                source_files_to_analyze,
-                timestamped_output_dir,  # Use timestamped directory
-                target,
-                max_workers=max_workers,
-            )
-
-            # Handle single file timeout case for parallel analysis
-            if failed_files > 0 and len(source_files_to_analyze) == 1:
-                return -1
-
-        else:
-            # Use sequential analysis (original logic with tmp directory)
-            # Progress tracking for large batches
-            if len(source_files_to_analyze) > 10:
-                logger.info(
-                    "Large number of files detected. Progress will be logged every 10 files."
-                )
-
-            total_bugs = 0
-            analyzed_files = 0
-            failed_files = 0
-
-            for i, entry in enumerate(source_files_to_analyze):
-                source_file = entry.get("file", "")
-
-                # Clean up source file path for logging
-                if source_file.startswith("../../"):
-                    clean_source = source_file[6:]
-                else:
-                    clean_source = source_file
-
-                # Progress logging
-                if len(source_files_to_analyze) > 10:
-                    if (i + 1) % 10 == 0 or i == 0:
-                        logger.info(
-                            f"Progress: {i + 1}/{len(source_files_to_analyze)} files - Analyzing: {clean_source}"
-                        )
-                else:
-                    logger.info(f"Analyzing: {clean_source}")
-
-                # Create temp output directory first
-                temp_output_dir = timestamped_output_dir / "tmp"
-                temp_output_dir.mkdir(parents=True, exist_ok=True)
-
-                # Use helper function to analyze the file
-                success, num_bugs, error_msg = self._analyze_v8_source_file(
-                    entry, temp_output_dir, target=target, timeout=900
-                )
-
-                if success:
-                    if num_bugs > 0:
-                        # Only create permanent directory if bugs were found
-                        # Use full path with slashes replaced by underscores
-                        safe_filename = clean_source.replace("/", "_").replace(".", "_")
-                        final_output_dir = timestamped_output_dir / safe_filename
-
-                        # Move tmp directory to final location
-
-                        if final_output_dir.exists():
-                            shutil.rmtree(final_output_dir)
-                        shutil.move(str(temp_output_dir), str(final_output_dir))
-
-                        # Recreate tmp dir for next file
-                        temp_output_dir.mkdir(parents=True, exist_ok=True)
-
-                        logger.info(
-                            f"Found {num_bugs} bugs in {clean_source} -> {safe_filename}/"
-                        )
-                        total_bugs += num_bugs
-                    else:
-                        # Clean up tmp directory if no bugs found
-
-                        shutil.rmtree(temp_output_dir, ignore_errors=True)
-                        temp_output_dir.mkdir(parents=True, exist_ok=True)
-
-                    analyzed_files += 1
-                else:
-                    if "Timeout" in error_msg:
-                        logger.warning(
-                            f"{error_msg} (file {i+1}/{len(source_files_to_analyze)})"
-                        )
-                        failed_files += 1
-                        if len(source_files_to_analyze) == 1:
-                            return -1
-                    else:
-                        logger.error(error_msg)
-                        failed_files += 1
-
-            # Clean up any remaining tmp directory
-            temp_output_dir = timestamped_output_dir / "tmp"
-            if temp_output_dir.exists():
-
-                shutil.rmtree(temp_output_dir, ignore_errors=True)
-
-        # Final summary
-        logger.info(f"V8 analysis completed:")
-        logger.info(
-            f"  Files analyzed: {analyzed_files}/{len(source_files_to_analyze)}"
-        )
-        logger.info(f"  Files failed: {failed_files}")
-        logger.info(f"  Total bugs found: {total_bugs}")
-
-        # Create softlinks for refinement compatibility if needed
-        self._create_v8_report_softlinks(timestamped_output_dir, output_dir)
-
-        # Handle special cases
-        if total_bugs > 300:  # Too many bugs threshold
-            logger.warning("Too many bugs found!")
-            return -10
-
-        return total_bugs
-
-    def _create_timestamped_output_dir(self, base_output_dir: Path) -> Path:
-        """
-        Create a timestamped output directory similar to scan-build's behavior.
-
-        This creates a directory with format: YYYY-MM-DD-HHMMSS-PID-N
-        consistent with Linux scan-build timestamps.
-
-        Args:
-            base_output_dir: The base output directory
-
-        Returns:
-            Path: The timestamped output directory
-        """
-        # Create timestamp similar to scan-build format
-        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        pid = os.getpid()
-        rand_suffix = random.randint(1, 9999)
-
-        # Create directory name: YYYY-MM-DD-HHMMSS-PID-N
-        timestamped_name = f"{timestamp}-{pid}-{rand_suffix}"
-        timestamped_dir = Path(base_output_dir) / timestamped_name
-
-        # Create the directory
-        timestamped_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Created timestamped output directory: {timestamped_dir}")
-        return timestamped_dir
-
-    def _create_v8_report_softlinks(
-        self, timestamped_output_dir: Path, base_output_dir: Path
-    ) -> None:
-        """
-        Create softlinks to make V8 report structure compatible with refinement process.
-
-        Creates two levels of softlinks:
-        1. From timestamped subdirectories to base output dir (for refinement process)
-        2. From subdirectory HTML files to timestamped root (for scan-build compatibility)
-
-        Args:
-            timestamped_output_dir: The timestamped directory containing V8 report subdirectories
-            base_output_dir: The base output directory where refinement expects reports
-        """
-        try:
-            timestamped_output_dir = Path(timestamped_output_dir)
-            base_output_dir = Path(base_output_dir)
-
-            if not timestamped_output_dir.exists():
-                return
-
-            # Find all HTML files in subdirectories within timestamped dir
-            html_files_in_subdirs = list(timestamped_output_dir.glob("*/*.html"))
-
-            if not html_files_in_subdirs:
-                # No subdirectory structure, reports might already be in root
-                return
-
-            logger.info(
-                f"Creating V8 report softlinks for {len(html_files_in_subdirs)} files"
-            )
-
-            # 1. Create softlinks in the timestamped root directory (scan-build compatibility)
-            for html_file in html_files_in_subdirs:
-                subdir_name = html_file.parent.name
-                file_name = html_file.name
-
-                # Create unique link name in timestamped root
-                link_name = f"{subdir_name}_{file_name}"
-                timestamped_link_path = timestamped_output_dir / link_name
-
-                # Remove existing link if it exists
-                if timestamped_link_path.exists() or timestamped_link_path.is_symlink():
-                    timestamped_link_path.unlink()
-
-                # Create relative symlink within timestamped directory
-                relative_target = Path(subdir_name) / file_name
-                timestamped_link_path.symlink_to(relative_target)
-
-            # 2. Create softlinks from base output dir to timestamped files (refinement compatibility)
-            base_output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Link all HTML files from timestamped directory to base directory
-            for html_file in timestamped_output_dir.glob("*.html"):
-                base_link_path = base_output_dir / html_file.name
-
-                # Remove existing link if it exists
-                if base_link_path.exists() or base_link_path.is_symlink():
-                    base_link_path.unlink()
-
-                # Create relative symlink from base to timestamped
-                timestamped_name = timestamped_output_dir.name
-                relative_target = Path(timestamped_name) / html_file.name
-                base_link_path.symlink_to(relative_target)
-
-            logger.info(
-                f"Created V8 softlinks: {len(html_files_in_subdirs)} in timestamped dir, mirrored to base dir"
-            )
-
-        except Exception as e:
-            logger.warning(f"Failed to create V8 report softlinks: {e}")
-            # Non-fatal error - continue without softlinks
-
-    def _discover_all_v8_source_files(self, target) -> List[str]:
-        """
-        Discover all V8 source files that can be analyzed.
-        Uses compile_commands.json to find all files that are actually compiled.
-
-        Returns:
-            List[str]: List of relative source file paths
-        """
-        source_files = []
-        compile_commands_path = os.path.join(
-            target.repo.working_dir, "out/x64.release/compile_commands.json"
-        )
-
-        if os.path.exists(compile_commands_path):
-            try:
-                logger.info("Reading compile_commands.json to discover V8 source files")
-                with open(compile_commands_path, "r") as f:
-                    commands = json.load(f)
-
-                # Extract all source files from compile commands
-                for cmd in commands:
-                    file_path = cmd.get("file", "")
-                    if file_path:
-                        # V8 uses ../../ prefix in compile_commands.json
-                        if file_path.startswith("../../"):
-                            clean_path = file_path[6:]  # Remove ../../
-                        else:
-                            clean_path = file_path
-
-                        # Only include C++ source files
-                        if clean_path.endswith((".cc", ".cpp", ".c")):
-                            # Filter out third-party and build-generated files
-                            if not any(
-                                exclude in clean_path
-                                for exclude in [
-                                    "third_party/",
-                                    "buildtools/",
-                                    "build/",
-                                    "out/",
-                                    ".git/",
-                                    "gen/",
-                                    # Skip some very large or problematic directories
-                                    "tools/v8_gypfiles/",
-                                ]
-                            ):
-                                source_files.append(clean_path)
-
-                # Remove duplicates and sort
-                source_files = sorted(list(set(source_files)))
-                logger.info(
-                    f"Discovered {len(source_files)} V8 source files from compile_commands.json"
-                )
-
-                # Log some examples
-                if source_files:
-                    logger.info(f"Example files: {source_files[:5]}")
-                    if len(source_files) > 5:
-                        logger.info(f"... and {len(source_files) - 5} more files")
-
-                return source_files
-
-            except Exception as e:
-                logger.error(f"Failed to read compile_commands.json: {e}")
-
-        # Fallback: manually discover source files by walking directories
-        logger.info("Falling back to directory traversal for source file discovery")
-        return self._discover_v8_source_files_by_traversal(target)
-
-    def _discover_v8_source_files_by_traversal(self, target) -> List[str]:
-        """
-        Fallback method to discover V8 source files by walking the directory tree.
-
-        Returns:
-            List[str]: List of relative source file paths
-        """
-        source_files = []
-        repo_root = Path(target.repo.working_dir)
-
-        # Define directories to search and exclude patterns
-        search_dirs = ["src", "test", "samples"]
-        exclude_patterns = [
-            "third_party",
-            "buildtools",
-            "build",
-            "out",
-            ".git",
-            "gen",
-            "node_modules",
-            "__pycache__",
-        ]
-
-        logger.info(f"Searching for V8 source files in: {search_dirs}")
-
-        for search_dir in search_dirs:
-            search_path = repo_root / search_dir
-            if not search_path.exists():
-                continue
-
-            for file_path in search_path.rglob("*.cc"):
-                # Convert to relative path
-                relative_path = file_path.relative_to(repo_root)
-                relative_str = str(relative_path)
-
-                # Skip excluded patterns
-                if any(pattern in relative_str for pattern in exclude_patterns):
-                    continue
-
-                source_files.append(relative_str)
-
-            # Also include .cpp and .c files
-            for ext in ["*.cpp", "*.c"]:
-                for file_path in search_path.rglob(ext):
-                    relative_path = file_path.relative_to(repo_root)
-                    relative_str = str(relative_path)
-
-                    if any(pattern in relative_str for pattern in exclude_patterns):
-                        continue
-
-                    source_files.append(relative_str)
-
-        # Remove duplicates and sort
-        source_files = sorted(list(set(source_files)))
-        logger.info(f"Discovered {len(source_files)} V8 source files by traversal")
-
-        # Limit the number of files to avoid overwhelming analysis
-        max_files = 1000  # Reasonable limit for analysis
-        if len(source_files) > max_files:
-            logger.warning(
-                f"Too many files ({len(source_files)}), limiting to first {max_files}"
-            )
-            source_files = source_files[:max_files]
-
-        return source_files
+            error_msg = f"Analysis exception: {str(e)}"
+            logger.error(f"Exception analyzing {display_source}: {error_msg}")
+            return False, 0, error_msg
 
     def _generate_command(self, no_output=False, plugin_names=None):
         """
@@ -2385,3 +1839,532 @@ extern "C" const char clang_analyzerAPIVersionString[] =
         if len(name) > 30:
             name = name[:30]
         return name or "SAGenTest"
+
+    def _validate_checker_chromium(
+        self,
+        checker_code: str,
+        commit_id,  # Can be str or List[str]
+        patch: str,
+        target,
+        skip_build_checker=False,
+    ):
+        """
+        Validate the checker against a Chromium commit(s) and patch.
+        Analyzes files in both buggy and fixed versions to compute TP/TN.
+        
+        Args:
+            commit_id: Can be a single commit ID (str) or list of commit IDs (List[str])
+        """
+        # Handle both single commit and multiple commits
+        if isinstance(commit_id, str):
+            commit_ids = [commit_id]
+            main_commit_id = commit_id
+        else:
+            commit_ids = commit_id
+            main_commit_id = commit_ids[0] if commit_ids else "unknown"
+        
+        logger.info(f"Chromium validation with commits: {commit_ids}")
+        
+        # Remove depot_tools from PATH to prevent gclient sync from changing Chromium dependencies
+        original_path = os.environ.get("PATH", "")
+        filtered_path = ":".join(
+            [p for p in original_path.split(":") if "depot_tools" not in p]
+        )
+        os.environ["PATH"] = filtered_path
+
+        logger.info(f"Chromium validation: removed depot_tools from PATH")
+
+        TP, TN = 0, 0
+        if not skip_build_checker:
+            self.build_checker(checker_code, Path("tmp") / "build_logs")
+
+        # Get source files from patch
+        source_files = target.get_source_files_from_patch(patch)
+        logger.info(f"Source files to analyze from patch: {source_files}")
+
+        # Create debug log for troubleshooting
+        debug_log = "/tmp/chromium_checker_debug.log"
+        if os.path.exists(debug_log):
+            os.remove(debug_log)
+
+        # Write initial debug info
+        with open(debug_log, "w") as f:
+            f.write(f"Chromium Checker Validation Debug Log\n")
+            f.write(f"Commit IDs: {commit_ids}\n")
+            f.write(f"Main commit ID: {main_commit_id}\n")
+            f.write(f"Source files from patch: {source_files}\n")
+            f.write(f"Timestamp: {datetime.now()}\n\n")
+
+        num_bug_files = {}
+
+        # For multiple commits, sort by timestamp and get earliest for 'before' state
+        if len(commit_ids) > 1:
+            logger.info("Multiple commits detected, sorting by timestamp")
+            # Import the function from checker_gen
+            from checker_gen import sort_commits_by_timestamp
+            sorted_commits = sort_commits_by_timestamp(commit_ids, target)
+            before_commit = sorted_commits[0]  # Earliest commit
+            after_commit = sorted_commits[-1]  # Latest commit
+            logger.info(f"Using earliest commit {before_commit} for 'before' state")
+            logger.info(f"Using latest commit {after_commit} for 'after' state")
+        else:
+            before_commit = commit_ids[0]
+            after_commit = commit_ids[0]
+
+        # Create output directories for validation (consistent with V8 structure)
+        validation_base_dir = Path("tmp") / "chromium_validation" / main_commit_id
+
+        # Create timestamped directories for both buggy and fixed versions
+        buggy_base_dir = validation_base_dir / "buggy"
+        fixed_base_dir = validation_base_dir / "fixed"
+        buggy_base_dir.mkdir(parents=True, exist_ok=True)
+        fixed_base_dir.mkdir(parents=True, exist_ok=True)
+
+        buggy_output_dir = self._create_timestamped_output_dir(buggy_base_dir)
+        fixed_output_dir = self._create_timestamped_output_dir(fixed_base_dir)
+
+        # Checkout buggy version (earliest commit's parent for multi-commit case)
+        llvm_build_dir = self.backend_path / "build"
+        target.checkout_commit(
+            before_commit,
+            is_before=True,
+            arch="x64",
+            build_config="release",
+            llvm_path=llvm_build_dir,
+            skip_gclient_sync=True,  # Skip gclient sync for faster validation
+        )
+
+        # Build the specific object files first
+        env = os.environ.copy()
+        env["PATH"] = f"{llvm_build_dir}/bin:" + env.get("PATH", "")
+
+        # Get compile_commands.json to find exact entries for source files
+        compile_commands_path = (
+            Path(target.repo.working_dir) / "out/x64_release/compile_commands.json"
+        )
+
+        # Use helper function to get compile entries
+        compile_entries = self._get_compile_entries_for_chromium_sources(
+            compile_commands_path, source_files
+        )
+
+        # Build and analyze buggy version
+        for source_file in source_files:
+            if source_file in compile_entries:
+                # Create file-specific output directory
+                safe_filename = source_file.replace("/", "_").replace(".", "_")
+                file_output_dir = buggy_output_dir / safe_filename
+                file_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                success, bugs, error = self._analyze_chromium_source_file(
+                    compile_entries[source_file], file_output_dir, target
+                )
+                if success:
+                    num_bug_files[source_file] = bugs
+                    with open(debug_log, "a") as f:
+                        f.write(f"Buggy version - {source_file}: {bugs} bugs\n")
+                else:
+                    with open(debug_log, "a") as f:
+                        f.write(f"Buggy version - {source_file}: Analysis failed - {error}\n")
+            else:
+                logger.warning(f"No compile entry found for {source_file} in buggy version")
+
+        # Checkout fixed version
+        target.checkout_commit(
+            after_commit,
+            is_before=False,
+            arch="x64",
+            build_config="release",
+            llvm_path=llvm_build_dir,
+            skip_gclient_sync=True,  # Skip gclient sync for faster validation
+        )
+
+        # Re-read compile_commands.json for fixed version (may have changed after checkout)
+        compile_entries = self._get_compile_entries_for_chromium_sources(
+            compile_commands_path, source_files
+        )
+
+        # Build and analyze fixed version
+        for source_file in source_files:
+            if source_file in compile_entries:
+                # Create file-specific output directory
+                safe_filename = source_file.replace("/", "_").replace(".", "_")
+                file_output_dir = fixed_output_dir / safe_filename
+                file_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                success, bugs, error = self._analyze_chromium_source_file(
+                    compile_entries[source_file], file_output_dir, target
+                )
+                if success:
+                    buggy_bugs = num_bug_files.get(source_file, 0)
+                    if buggy_bugs > 0 and bugs == 0:
+                        TP += 1  # True positive: bug found in buggy version, not in fixed
+                    elif buggy_bugs == 0 and bugs == 0:
+                        TN += 1  # True negative: no bug in either version
+                    
+                    with open(debug_log, "a") as f:
+                        f.write(f"Fixed version - {source_file}: {bugs} bugs (was {buggy_bugs})\n")
+                else:
+                    with open(debug_log, "a") as f:
+                        f.write(f"Fixed version - {source_file}: Analysis failed - {error}\n")
+            else:
+                logger.warning(f"No compile entry found for {source_file} in fixed version")
+
+        logger.info(f"Chromium Validation Result: TP={TP}, TN={TN}")
+
+        # Create softlinks for both buggy and fixed directories
+        self._create_chromium_report_softlinks(buggy_output_dir, buggy_base_dir)
+        self._create_chromium_report_softlinks(fixed_output_dir, fixed_base_dir)
+
+        # Write final summary to debug log
+        with open(debug_log, "a") as f:
+            f.write(f"\nFinal Results:\n")
+            f.write(f"True Positives: {TP}\n")
+            f.write(f"True Negatives: {TN}\n")
+
+        return TP, TN
+
+    def _get_compile_entries_for_chromium_sources(
+        self, compile_commands_path: Path, source_files: List[str]
+    ) -> dict:
+        """
+        Extract compile entries for specific source files from compile_commands.json.
+
+        Args:
+            compile_commands_path: Path to compile_commands.json
+            source_files: List of source files to find entries for
+
+        Returns:
+            dict: Mapping of source file to compile command entry
+        """
+        compile_entries = {}
+
+        if not compile_commands_path.exists():
+            logger.warning(f"compile_commands.json not found at {compile_commands_path}")
+            return compile_entries
+
+        try:
+            with open(compile_commands_path, 'r') as f:
+                commands = json.load(f)
+
+            for entry in commands:
+                file_path = entry.get('file', '')
+                # Normalize paths for comparison
+                if file_path.startswith('../../'):
+                    normalized_file = file_path[6:]  # Remove ../../
+                else:
+                    normalized_file = file_path
+
+                for source_file in source_files:
+                    if normalized_file == source_file or file_path.endswith(source_file):
+                        compile_entries[source_file] = entry
+                        logger.debug(f"Found compile entry for {source_file}")
+                        break
+
+        except Exception as e:
+            logger.error(f"Failed to read compile_commands.json: {e}")
+
+        return compile_entries
+
+    def _analyze_chromium_source_file(self, compile_entry, output_dir, target=None, timeout=900):
+        """
+        Analyze a single source file for Chromium using clang++ --analyze.
+
+        Args:
+            compile_entry: Entry from compile_commands.json for the source file
+            output_dir: Directory to save analysis reports
+            target: The Chromium target
+
+        Returns:
+            tuple: (success: bool, num_bugs: int, error_message: str or None)
+        """
+        source_file = compile_entry.get("file", "")
+        compile_cmd = compile_entry.get("command", "")
+        directory = compile_entry.get("directory", "")
+
+        if not source_file or not compile_cmd:
+            return False, 0, "Missing file or command in compile entry"
+
+        # Clean up source file path for logging
+        if source_file.startswith("../../"):
+            clean_source = source_file[6:]
+        else:
+            clean_source = source_file
+
+        # Build clang++ --analyze command
+        llvm_build_dir = self.backend_path / "build"
+        plugin_path = f"{llvm_build_dir}/lib/SAGenTestPlugin.so"
+
+        cmd_parts = shlex.split(compile_cmd)
+        analyzer_cmd = [f"{llvm_build_dir}/bin/clang++", "--analyze"]
+
+        # Add plugin and checker configuration
+        analyzer_cmd.extend(
+            [
+                "-Xanalyzer",
+                "-load",
+                "-Xanalyzer",
+                plugin_path,
+                "-Xanalyzer",
+                "-analyzer-checker",
+                "-Xanalyzer",
+                "custom.SAGenTestChecker",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "core",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "cplusplus",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "deadcode",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "unix",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "nullability",
+                "-Xanalyzer",
+                "-analyzer-disable-checker",
+                "-Xanalyzer",
+                "security",
+                "-Xanalyzer",
+                "-analyzer-config",
+                "-Xanalyzer",
+                "max-loop=8",
+                "-Xanalyzer",
+                "-analyzer-output=html",
+                "-o",
+                str(output_dir.absolute())
+                if hasattr(output_dir, "absolute")
+                else str(output_dir),
+            ]
+        )
+
+        # Extract compilation flags from original command (skip output and module-related flags)
+        skip_next = False
+        for part in cmd_parts[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if part in ['-o', '-MF', '-MT', '-MD']:
+                skip_next = True
+                continue
+            if part.startswith('-o') or part.startswith('-MF') or part.startswith('-MT'):
+                continue
+            if not part.endswith('.o') and not part.endswith('.d'):
+                analyzer_cmd.append(part)
+
+        # Add the source file
+        analyzer_cmd.append(source_file)
+
+        # Determine working directory
+        work_dir = directory or (target.repo.working_dir if target else None)
+        if not work_dir:
+            return False, 0, "No working directory available"
+
+        # Run analysis
+        try:
+            logger.debug(f"Analyzing Chromium source: {clean_source}")
+            result = sp.run(
+                analyzer_cmd,
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            logger.info(f"Analysis completed for {clean_source} with return code {result.returncode}")
+
+            if result.returncode == 0 or result.returncode == 1:  # 1 can indicate warnings/bugs found
+                # Count bugs from stderr output
+                bug_count = self.get_num_bugs_from_direct_analysis(result.stderr)
+                return True, bug_count, None
+            else:
+                error_msg = f"Analysis failed with return code {result.returncode}: {result.stderr}"
+                logger.error(f"Failed to analyze {clean_source}: {error_msg}")
+                return False, 0, error_msg
+
+        except sp.TimeoutExpired:
+            error_msg = f"Analysis timeout after {timeout} seconds"
+            logger.warning(f"Timeout analyzing {clean_source}")
+            return False, 0, error_msg
+        except Exception as e:
+            error_msg = f"Analysis exception: {str(e)}"
+            logger.error(f"Exception analyzing {clean_source}: {error_msg}")
+            return False, 0, error_msg
+
+    def _discover_chromium_source_entries(self, all_entries) -> List[dict]:
+        """
+        Discover Chromium source files that can be analyzed from compile_commands.json.
+
+        Args:
+            all_entries: All entries from compile_commands.json
+
+        Returns:
+            List[dict]: List of compile command entries for Chromium source files
+        """
+        source_entries = []
+        
+        # Define patterns for Chromium source directories to include
+        include_patterns = [
+            "base/", "net/", "content/", "chrome/", "components/",
+            "ui/", "media/", "gpu/", "services/", "third_party/blink/"
+        ]
+        
+        # Define patterns to exclude
+        exclude_patterns = [
+            "test", "_test", "_unittest", "mock", "fake", "generated",
+            "third_party/", "build/", "tools/", "out/", ".pb.cc"
+        ]
+
+        logger.info(f"Filtering {len(all_entries)} compile entries for Chromium analysis")
+
+        for entry in all_entries:
+            file_path = entry.get('file', '')
+            
+            # Normalize file path
+            if file_path.startswith('../../'):
+                normalized_path = file_path[6:]  # Remove ../../
+            else:
+                normalized_path = file_path
+            
+            # Check if it's a C++ source file
+            if not normalized_path.endswith(('.cc', '.cpp', '.c')):
+                continue
+            
+            # Check include patterns
+            include_match = any(pattern in normalized_path for pattern in include_patterns)
+            if not include_match:
+                continue
+            
+            # Check exclude patterns
+            exclude_match = any(pattern in normalized_path for pattern in exclude_patterns)
+            if exclude_match:
+                continue
+            
+            source_entries.append(entry)
+
+        logger.info(f"Found {len(source_entries)} Chromium source files to analyze")
+        
+        # Limit the number of files to avoid overwhelming analysis
+        max_files = 500  # Reasonable limit for Chromium analysis
+        if len(source_entries) > max_files:
+            logger.warning(f"Limiting analysis to {max_files} files (from {len(source_entries)})")
+            source_entries = source_entries[:max_files]
+
+        return source_entries
+
+    def _analyze_chromium_files_parallel(
+        self, source_entries_list, unique_output_dir, target, max_workers=32
+    ):
+        """
+        Analyze Chromium source files in parallel.
+
+        Args:
+            source_entries_list: List of compile_commands.json entries to analyze
+            unique_output_dir: Base output directory for reports
+            target: Chromium target
+            max_workers: Number of parallel workers
+
+        Returns:
+            tuple: (total_bugs, analyzed_files, failed_files)
+        """
+        # Thread-safe counters
+        total_bugs = 0
+        analyzed_files = 0
+        failed_files = 0
+        lock = threading.Lock()
+
+        def analyze_single_file(entry_with_index):
+            nonlocal total_bugs, analyzed_files, failed_files
+            
+            entry, index = entry_with_index
+            file_path = entry.get('file', 'unknown')
+            
+            try:
+                success, bugs, error = self._analyze_chromium_source_file(
+                    entry, unique_output_dir, target
+                )
+                
+                with lock:
+                    if success:
+                        total_bugs += bugs
+                        analyzed_files += 1
+                        if bugs > 0:
+                            logger.info(f"File {index}: {file_path} - {bugs} bugs found")
+                    else:
+                        failed_files += 1
+                        logger.warning(f"File {index}: {file_path} - Analysis failed: {error}")
+                        
+            except Exception as e:
+                with lock:
+                    failed_files += 1
+                    logger.error(f"File {index}: {file_path} - Exception: {e}")
+
+        # Execute analysis in parallel
+        logger.info(f"Starting parallel Chromium analysis with {max_workers} workers")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(analyze_single_file, (entry, i)): i 
+                for i, entry in enumerate(source_entries_list)
+            }
+            
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Parallel analysis task failed: {e}")
+
+        logger.info(f"Parallel Chromium analysis completed")
+        return total_bugs, analyzed_files, failed_files
+
+    def _create_chromium_report_softlinks(
+        self, timestamped_output_dir: Path, base_output_dir: Path
+    ) -> None:
+        """
+        Create softlinks to make Chromium report structure compatible with refinement process.
+        """
+        try:
+            if timestamped_output_dir.exists():
+                for subdir in timestamped_output_dir.iterdir():
+                    if subdir.is_dir():
+                        link_target = base_output_dir / subdir.name
+                        if not link_target.exists():
+                            link_target.symlink_to(subdir, target_is_directory=True)
+                            logger.debug(f"Created softlink: {link_target} -> {subdir}")
+        except Exception as e:
+            logger.warning(f"Failed to create Chromium report softlinks: {e}")
+
+    def _create_timestamped_output_dir(self, base_output_dir: Path) -> Path:
+        """
+        Create a timestamped output directory similar to scan-build's behavior.
+
+        This creates a directory with format: YYYY-MM-DD-HHMMSS-PID-N
+        consistent with Linux scan-build timestamps.
+
+        Args:
+            base_output_dir: The base output directory
+
+        Returns:
+            Path: The timestamped output directory
+        """
+        # Create timestamp similar to scan-build format
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        pid = os.getpid()
+        rand_suffix = random.randint(1, 9999)
+
+        # Create directory name: YYYY-MM-DD-HHMMSS-PID-N
+        timestamped_name = f"{timestamp}-{pid}-{rand_suffix}"
+        timestamped_dir = Path(base_output_dir) / timestamped_name
+
+        # Create the directory
+        timestamped_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Created timestamped output directory: {timestamped_dir}")
+        return timestamped_dir

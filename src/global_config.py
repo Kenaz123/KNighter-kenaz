@@ -10,6 +10,7 @@ from backends.factory import AnalysisBackendFactory
 from targets.factory import TargetFactory
 from targets.linux import Linux
 from targets.v8 import V8
+from targets.chromium import Chromium
 
 logger = loguru.logger
 
@@ -51,9 +52,13 @@ class GlobalConfig:
             self._config["v8"] = V8(self.get("v8_dir"))
         if "linux_dir" in self._config:
             self._config["linux"] = Linux(self.get("linux_dir"))
+        if "chromium_dir" in self._config:
+            self._config["chromium"] = Chromium(self.get("chromium_dir"))
 
         if target_type == "v8":
             self._config["target"] = self._config["v8"]
+        elif target_type == "chromium":
+            self._config["target"] = self._config["chromium"]
         else:
             self._config["target"] = self._config["linux"]
         self._config["backend"] = ClangBackend(self.get("LLVM_dir"))

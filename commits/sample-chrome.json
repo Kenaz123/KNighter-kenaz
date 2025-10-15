@@ -1,0 +1,236 @@
+[
+  {
+    "bug_id": "40086360",
+    "commit_ids": [
+      "34a2937e30659b6d5616d881f3be0f93b4a59c47",
+      "133d86129664dc30af9ce2fb2d36f6de4874d5a4",
+      "7ba02e91435f82305b10426639fdb480fb275aca",
+      "d2dfa6c653e88758c80530d5edfa464c5e865e98"
+    ],
+    "bug_type": "Information-Disclosure"
+  },
+  {
+    "bug_id": "40089450",
+    "commit_ids": [
+      "0dd1c5ff57ca550269c61455b9a3385289c033bc",
+      "a2d76e87da6b467dfcc11e84327e7c00f0a1b5a7"
+    ],
+    "bug_type": "XSS"
+  },
+  {
+    "bug_id": "40051596",
+    "commit_ids": [
+      "71e4ae376a1c11b1ae8585451ee3af1909081880",
+      "cdb798347ad78bcb1cffdbdc0e06eb1ec1867a57"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "40057691",
+    "commit_ids": [
+      "8bbb9ffaaaed8b2e4759bfb626ed83232c47a731"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "40057791",
+    "commit_ids": [
+      "8b68941ce511b35e68f9e7a2b69271c5aad2c5b2"
+    ],
+    "bug_type": "Buffer-Overflow"
+  },
+  {
+    "bug_id": "40058873",
+    "commit_ids": [
+      "61d739870c7ccba8d7d1b55e04c9bcba9540c096"
+    ],
+    "bug_type": "Taint-Style"
+  },
+  {
+    "bug_id": "40059071",
+    "commit_ids": [
+      "d5561f9e792bef4da69074b13cc04bbf38f95d69"
+    ],
+    "bug_type": "Buffer-Overflow"
+  },
+  {
+    "bug_id": "40060076",
+    "commit_ids": [
+      "ee63f226247c1692ac85d488dfc49d592ef2707c",
+      "77975359a075a36610b27c0f180e77eda1fb08ba",
+      "8d632e3f79d63bc6b1858934e5e85e18f0007b48"
+    ],
+    "bug_type": "XSS"
+  },
+  {
+    "bug_id": "40060358",
+    "commit_ids": [
+      "fe310d6b6175bf4b1d3c06f011ce5c27ce1d100d"
+    ],
+    "bug_type": "CSRF"
+  },
+  {
+    "bug_id": "40060615",
+    "commit_ids": [
+      "4c368edb4f76d794c80a1971f1a36f6c417c2186"
+    ],
+    "bug_type": "Taint-Style"
+  },
+  {
+    "bug_id": "40061023",
+    "commit_ids": [
+      "31023585b5b2df689f5045dd0afd148eabbcb606"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "40061287",
+    "commit_ids": [
+      "c7bbe21415591042334587fab29a528ea864de1b"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "40062534",
+    "commit_ids": [
+      "153ab68741786276ee86ff25e07d020c3aee43e6",
+      "e401c21f259351d1eee212d6c04b306f018f1973"
+    ],
+    "bug_type": "Privilege-Escalation"
+  },
+  {
+    "bug_id": "40065022",
+    "commit_ids": [
+      "6d95935f83b1296e45c7f4cc2b64108a81865601",
+      "f9ea2265267c653ce0c789662b527b17af022eac"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "40067111",
+    "commit_ids": [
+      "d181687ebf2a8d48c8e42a5d76d2a5b00c352929"
+    ],
+    "bug_type": "Race-Condition"
+  },
+  {
+    "bug_id": "40068394",
+    "commit_ids": [
+      "080eac227f0de92a92f7869c2c5d7267d413a580"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "40936265",
+    "commit_ids": [
+      "5f6ac908a32261dccd269dd66ca6ed4f0c90fcc6"
+    ],
+    "bug_type": "XSS"
+  },
+  {
+    "bug_id": "40076120",
+    "commit_ids": [
+      "d03e39ce030958ca00fa1a6f06f4cf98c7fbd6b5",
+      "47617c1e9e6217aa03b889a8a3f1af44b4baa1ef",
+      "377ccf6b184e982d278f999253e2bf839732d9db"
+    ],
+    "bug_type": "Privilege-Escalation"
+  },
+  {
+    "bug_id": "41484151",
+    "commit_ids": [
+      "ee544f4b9aa17d9a2673d31b7ec57dfa1e9478bb"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "41491379",
+    "commit_ids": [
+      "f2bfc40f7d6d135da090e04f35d376c93a4ab24c"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "324770940",
+    "commit_ids": [
+      "1c2359677af25b505a825e714d36fed4c83e00d5",
+      "f77951dcb735d44fd852ff0ab7ce708dab0ceef4"
+    ],
+    "bug_type": "Privilege-Escalation"
+  },
+  {
+    "bug_id": "328278718",
+    "commit_ids": [
+      "b76e11c3c3a79c14f89c80042aebd3dbe3b222fb",
+      "dbb2b5298b4b684c1b884a69878fae4192847d75",
+      "750269874bf3bcde06518836e32a5049642130b1"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "342419061",
+    "commit_ids": [
+      "3354113bd081986cc0d134a8453e32c2a2d483e7",
+      "83d78425e92b9696f67c697f45cc0c460a19ce1d"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "347588491",
+    "commit_ids": [
+      "22b26969353c3c4899a8b7cc9e19ace3389e1ea2",
+      "7b745a452850671595c9e07bca4e586536e7a616"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "357391257",
+    "commit_ids": [
+      "ec85a32bb5d736637c934088c14b2b6a42457467",
+      "8669b50ce1c002cc5e9f039b8cb94857f68a1414",
+      "5aeecd43d0baa3b40d9c967c498f53e62202cfcc"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "366375482",
+    "commit_ids": [
+      "d3a28113e036058a65e95839bf36f82a2ce5ef7a",
+      "5ade06574566c988a05b06122697155b1d086b3a",
+      "6345decee9fc2a833c799750cfb3d57ea39f743b"
+    ],
+    "bug_type": "Security-Vulnerability"
+  },
+  {
+    "bug_id": "370482421",
+    "commit_ids": [
+      "a7104d958eae875966006894ec3cd721e8adfc42",
+      "07cff4201090ad54fd72fbd645165a80536cf550"
+    ],
+    "bug_type": "Authentication-Bypass"
+  },
+  {
+    "bug_id": "407315793",
+    "commit_ids": [
+      "17c050eef5e206a3d45054030b6941a8bf048490"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "412057896",
+    "commit_ids": [
+      "aa3e1b188a94da972cfbfaf47713ef5460cff25f",
+      "e26c8a91ee3f017cff759ca681a58522cc29666a"
+    ],
+    "bug_type": "Use-After-Free"
+  },
+  {
+    "bug_id": "420150619",
+    "commit_ids": [
+      "5d1549a771f8a35b9c1e02df27013dc4e1d4ec30",
+      "d36d9a59adbd318d170cccb717dd3357178ab62d",
+      "2b3f39392152a07129c5600420ea570325e0eeb5"
+    ],
+    "bug_type": "Race-Condition"
+  }
+]

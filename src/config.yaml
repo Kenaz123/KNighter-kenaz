@@ -1,0 +1,10 @@
+result_dir: "/home/bugrepair/playground/KNighter-chrome/results/"
+LLVM_dir: "/home/bugrepair/KNighter/llvm-project-llvmorg-18.1.8"
+backend_type: "csa"
+checker_nums: 10
+linux_dir: "/home/bugrepair/KNighter/linux"
+v8_dir: "/home/bugrepair/v8/v8"
+chromium_dir: "/home/bugrepair/chromium/src"
+target_type: "chromium"
+key_file: "llm_keys.yaml"
+model: "o3-mini"

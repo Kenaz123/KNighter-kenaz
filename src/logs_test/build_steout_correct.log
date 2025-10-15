@@ -1,0 +1,174 @@
+[  0%] Built target llvm_vcsrevision_h
+[  0%] Built target obj.clangSupport
+[  0%] Built target LLVMSupportBlake3
+[  0%] Built target LLVMDemangle
+[  0%] Built target SAGenTestPlugin_exports
+[  0%] Built target obj.LLVMTableGenCommon
+[  7%] Built target LLVMSupport
+[  7%] Built target clangSupport
+[  7%] Built target LLVMBitstreamReader
+[  7%] Built target LLVMOption
+[  7%] Built target LLVMDebugInfoMSF
+[  7%] Built target LLVMTableGen
+[  7%] Built target LLVMDebugInfoCodeView
+[  7%] Built target llvm-min-tblgen
+[  7%] Built target clang-tblgen
+[  7%] Built target RISCVTargetParserTableGen
+[  7%] Built target omp_gen
+[  7%] Built target vt_gen
+[ 11%] Built target intrinsics_gen
+[ 11%] Built target ClangSyntaxNodeClasses
+[ 11%] Built target ClangAttrImpl
+[ 11%] Built target ClangAttrClasses
+[ 11%] Built target ClangAttrTextDump
+[ 11%] Built target ClangAttrTraverse
+[ 11%] Built target ClangAttrVisitor
+[ 11%] Built target ClangStmtNodes
+[ 11%] Built target ClangDeclNodes
+[ 11%] Built target ClangTypeNodes
+[ 11%] Built target ClangAbstractBasicWriter
+[ 11%] Built target ClangAbstractBasicReader
+[ 11%] Built target ClangAbstractTypeReader
+[ 11%] Built target ClangCommentNodes
+[ 11%] Built target ClangCommentHTMLTags
+[ 11%] Built target ClangAbstractTypeWriter
+[ 11%] Built target ClangCommentHTMLTagsProperties
+[ 11%] Built target ClangCommentHTMLNamedCharacterReferences
+[ 11%] Built target ClangCommentCommandList
+[ 11%] Built target ClangCommentCommandInfo
+[ 11%] Built target ClangDiagnosticAnalysis
+[ 11%] Built target StmtDataCollectors
+[ 11%] Built target ClangDiagnosticAST
+[ 11%] Built target ClangDiagnosticComment
+[ 11%] Built target ClangDiagnosticCommon
+[ 11%] Built target ClangDiagnosticDriver
+[ 11%] Built target ClangDiagnosticCrossTU
+[ 11%] Built target ClangDiagnosticFrontend
+[ 11%] Built target ClangDiagnosticLex
+[ 11%] Built target ClangDiagnosticRefactoring
+[ 11%] Built target ClangDiagnosticParse
+[ 11%] Built target ClangDiagnosticSema
+[ 11%] Built target ClangDiagnosticSerialization
+[ 11%] Built target ClangDiagnosticIndexName
+[ 11%] Built target ClangDiagnosticGroups
+[ 11%] Built target ClangAttrList
+[ 11%] Built target ClangAttrMustPrintLeftList
+[ 11%] Built target ClangAttrCanPrintLeftList
+[ 11%] Built target ClangAttrSubjectMatchRuleList
+[ 11%] Built target ClangRegularKeywordAttrInfo
+[ 11%] Built target ClangAttrHasAttributeImpl
+[ 11%] Built target ClangARMFP16
+[ 11%] Built target ClangARMNeon
+[ 11%] Built target ClangARMMveBuiltinsDef
+[ 11%] Built target ClangARMMveBuiltinCG
+[ 11%] Built target ClangARMMveBuiltinSema
+[ 11%] Built target ClangARMMveBuiltinAliases
+[ 11%] Built target ClangARMSveBuiltins
+[ 11%] Built target ClangARMSveBuiltinCG
+[ 11%] Built target ClangARMSveTypeFlags
+[ 11%] Built target ClangARMSveSemaRangeChecks
+[ 11%] Built target ClangARMSveStreamingAttrs
+[ 11%] Built target ClangARMSmeBuiltinCG
+[ 11%] Built target ClangARMSmeBuiltins
+[ 11%] Built target ClangARMSmeSemaRangeChecks
+[ 11%] Built target ClangARMSmeStreamingAttrs
+[ 11%] Built target ClangARMSmeBuiltinsZAState
+[ 11%] Built target ClangARMCdeBuiltinsDef
+[ 11%] Built target ClangARMCdeBuiltinCG
+[ 11%] Built target ClangARMCdeBuiltinSema
+[ 11%] Built target ClangRISCVVectorBuiltins
+[ 11%] Built target ClangARMCdeBuiltinAliases
+[ 11%] Built target ClangRISCVVectorBuiltinSema
+[ 11%] Built target ClangRISCVVectorBuiltinCG
+[ 11%] Built target ClangRISCVSiFiveVectorBuiltins
+[ 11%] Built target ClangRISCVSiFiveVectorBuiltinCG
+[ 11%] Built target ClangRISCVSiFiveVectorBuiltinSema
+[ 11%] Built target ClangAttrParserStringSwitches
+[ 11%] Built target ClangAttrSubMatchRulesParserStringSwitches
+[ 11%] Built target LLVMCodeGenTypes
+[ 11%] Built target ClangAttrTemplateInstantiate
+[ 11%] Built target LLVMTableGenGlobalISel
+[ 11%] Built target ClangAttrParsedAttrList
+[ 11%] Built target ClangAttrParsedAttrKinds
+[ 11%] Built target ClangAttrSpellingListIndex
+[ 11%] Built target ClangAttrParsedAttrImpl
+[ 11%] Built target ClangSACheckers
+[ 11%] Built target ClangAttrPCHRead
+[ 11%] Built target ClangAttrPCHWrite
+[ 11%] Built target ClangSyntaxNodeList
+[ 11%] Built target LLVMDebugInfoBTF
+[ 11%] Built target LLVMTargetParser
+[ 11%] Built target LLVMRemarks
+[ 11%] Built target LLVMWindowsDriver
+[ 11%] Built target LLVMBinaryFormat
+[ 14%] Built target llvm-tblgen
+[ 14%] Built target ClangDriverOptions
+[ 14%] Built target LLVMTextAPI
+[ 14%] Built target clang-tablegen-targets
+[ 14%] Built target ClangAttrDocTable
+[ 14%] Built target Opcodes
+[ 14%] Built target obj.clangAPINotes
+[ 18%] Built target LLVMMC
+[ 18%] Built target ClangOpenCLBuiltinsImpl
+[ 22%] Built target LLVMCore
+[ 22%] Built target obj.clangLex
+[ 22%] Built target obj.clangASTMatchers
+[ 22%] Built target obj.clangParse
+[ 22%] Built target obj.clangEdit
+[ 22%] Built target obj.clangCrossTU
+[ 25%] Built target obj.clangRewrite
+[ 29%] Built target obj.clangBasic
+[ 29%] Built target obj.clangToolingCore
+[ 33%] Built target obj.clangAnalysis
+[ 37%] Built target obj.clangSerialization
+[ 37%] Built target obj.clangToolingInclusions
+[ 37%] Built target obj.clangIndex
+[ 37%] Built target LLVMBitReader
+[ 37%] Built target obj.clangFormat
+[ 40%] Built target obj.clangFrontend
+[ 44%] Built target obj.clangStaticAnalyzerFrontend
+[ 44%] Built target LLVMAsmParser
+[ 44%] Built target LLVMFrontendHLSL
+[ 51%] Built target obj.clangDriver
+[ 51%] Built target LLVMIRReader
+[ 51%] Built target LLVMMCParser
+[ 51%] Built target obj.clangStaticAnalyzerCore
+[ 51%] Built target LLVMObject
+[ 51%] Built target obj.clangSema
+[ 55%] Built target LLVMDebugInfoDWARF
+[ 59%] Built target obj.clangAST
+[ 66%] Built target LLVMDebugInfoPDB
+[ 74%] Built target obj.clangStaticAnalyzerCheckers
+[ 74%] Built target LLVMSymbolize
+[ 74%] Built target LLVMProfileData
+[ 81%] Built target LLVMAnalysis
+[ 88%] Built target LLVMTransformUtils
+[ 88%] Built target LLVMFrontendOffloading
+[ 88%] Built target LLVMAggressiveInstCombine
+[ 88%] Built target LLVMInstCombine
+[ 96%] Built target LLVMScalarOpts
+[ 96%] Built target LLVMFrontendOpenMP
+[ 96%] Built target clangBasic
+[ 96%] Built target clangLex
+[ 96%] Built target clangAPINotes
+[ 96%] Built target clangDriver
+[ 96%] Built target clangRewrite
+[ 96%] Built target clangAST
+[100%] Built target clangToolingCore
+[100%] Built target clangASTMatchers
+[100%] Built target clangEdit
+[100%] Built target clangToolingInclusions
+[100%] Built target clangAnalysis
+[100%] Built target clangFormat
+[100%] Built target clangSema
+[100%] Built target clangSerialization
+[100%] Built target clangParse
+[100%] Built target clangFrontend
+[100%] Built target clangIndex
+[100%] Built target clangCrossTU
+[100%] Built target clangStaticAnalyzerCore
+[100%] Built target clangStaticAnalyzerCheckers
+[100%] Built target clangStaticAnalyzerFrontend
+[100%] Building CXX object tools/clang/lib/Analysis/plugins/SAGenTestHandling/CMakeFiles/SAGenTestPlugin.dir/SAGenTestChecker.cpp.o
+[100%] Linking CXX shared module ../../../../../../lib/SAGenTestPlugin.so
+[100%] Built target SAGenTestPlugin

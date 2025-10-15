@@ -167,12 +167,18 @@ class CheckerData:
         base_result_dir: Path,
         index: int,
         patch: Optional[str] = None,
+        bug_id: Optional[str] = None,
+        commit_ids: Optional[List[str]] = None,
     ):
         self._status: CheckerStatus = CheckerStatus.INIT
         # Basic attributes
-        self.commit_id: str = commit_id
+        self.commit_id: str = commit_id  # Main/primary commit for compatibility
         self.commit_type: str = commit_type
         self.index: int = index
+        
+        # Extended attributes for multi-commit support
+        self.bug_id: Optional[str] = bug_id or commit_id
+        self.commit_ids: List[str] = commit_ids or [commit_id]
 
         self._base_result_dir: Path = base_result_dir
 
@@ -250,6 +256,8 @@ class CheckerData:
             "commit_id": self.commit_id,
             "commit_type": self.commit_type,
             "index": self.index,
+            "bug_id": self.bug_id,
+            "commit_ids": self.commit_ids,
             # Convert Path objects to strings
             "_base_result_dir": str(self._base_result_dir),
             "patch": self.patch,
